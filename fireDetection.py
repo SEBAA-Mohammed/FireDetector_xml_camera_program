@@ -1,90 +1,134 @@
-import cv2         # Library for openCV
-import threading   # Library for threading allowing code to run in the background
-import playsound   # Library for playing alarm sound
-import smtplib     # Library for sending emails
+import cv2
+import numpy as np
+import threading
+import smtplib
+import matplotlib.pyplot as plt
+import requests
+from PIL import Image
+import io
 
-# To access xml file which includes positive and negative images of fire.
-# (Trained images) File is also provided with the code.
 fire_cascade = cv2.CascadeClassifier('fire_detection_cascade_model.xml')
-
-# To start camera this command is used '0' for laptop built-in camera
-# and '1' for USB attached camera
 video = cv2.VideoCapture(0)
-runOnce = False  # To ensure some actions are performed once only
+runOnce = False
 
 
 def play_alarm_sound():
     """Defined function to play alarm post fire detection using threading"""
-    # To play alarm mp3 audio file is also provided with the code.
-    playsound.playsound('alarm-sound.mp3', True)
+    # playsound.playsound('alarm-sound.mp3', True)
     print('Fire alarm end')
 
 
 def send_mail():
     """Defined function to send e-mail post fire detection using threading"""
-    recipient_mail = 'add recipients mail'  # recipients mail
-    recipient_mail = recipient_mail.lower()  # To lower case mail
+    recipient_mail = 'add recipients mail'
+    recipient_mail = recipient_mail.lower()
 
     try:
         server = smtplib.SMTP('smtp.gmail.com', 587)
-        # Performs an EHLO greeting to the server
         server.ehlo()
-        # Initiates TLS encryption for secure communication
         server.starttls()
-        # Senders mail ID and password
         server.login('add senders mail', 'add senders password')
-        # Recipients mail with mail message
-        server.sendmail('add recipients mail', recipient_mail,
+        server.sendmail('add senders mail', recipient_mail,
                         'Warning fire accident has been reported')
-        # To print in consol to whom mail is sent
         print("Alert mail sent successfully to {}".format(recipient_mail))
-        server.close()  # To close SMTP server
+        server.close()
 
     except Exception as e:
-        print(e)  # Print error if there is any
+        print(e)
 
 
+def calculate_distance_and_direction(x, y, width, height, frame_width, frame_height):
+    center_x = frame_width // 2
+    center_y = frame_height // 2
+    distance = np.sqrt((x + width/2 - center_x)**2 +
+                       (y + height/2 - center_y)**2)
+
+    return distance
+
+
+def send_image_to_api(roi_bytes):
+    url = 'http://localhost:5001/image'  # API endpoint for sending the image
+    files = {'image': ('fire_image.jpg', roi_bytes, 'image/jpeg')}
+    response = requests.post(url, files=files)
+    if response.status_code == 200:
+        print('Image sent successfully to API.')
+    else:
+        print('Failed to send image to API.')
+
+
+x_coordinates = []
+y_coordinates = []
+fig, ax = plt.subplots()
 while (True):
     alarm_status = False
-    # Continuously captures frames from the video as long as ret is True
     ret, frame = video.read()
-    # Converts each frame to grayscale for better processing
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    # Detects fire using the cascade classifier with provided frame resolution
     fire = fire_cascade.detectMultiScale(frame, 1.2, 5)
 
-    # To highlight fire with square
     for (x, y, w, h) in fire:
-        # Draws rectangle around detected fire region
         cv2.rectangle(frame, (x-20, y-20), (x+w+20, y+h+20), (255, 0, 0), 2)
-        # Extracts region of interest (ROI)
         roi_gray = gray[y:y+h, x:x+w]
         roi_color = frame[y:y+h, x:x+w]
 
+        # Add detected coordinates to the lists
+        x_coordinates.append(x + w / 2)  # Use the center of the bounding box
+        y_coordinates.append(y + h / 2)  # Use the center of the bounding box
+
+        ax.clear()
+
+        # Plot the coordinates
+        ax.scatter(x_coordinates, y_coordinates)
+        ax.set_xlabel('X Coordinate')
+        ax.set_ylabel('Y Coordinate')
+        ax.set_title('Detected Fire Object Positions')
+        ax.set_xlim(0, frame.shape[1])  # Limit x-axis to frame width
+        ax.set_ylim(frame.shape[0], 0)  # Limit y-axis to frame height
+        ax.grid(True)
+
+        # Display the plot
+        plt.pause(0.01)  # Pause to update the plot
+
         if runOnce == False:
-            # print('Mail send initiated')
-            # To call alarm thread
-            # threading.Thread(target=send_mail).start()
+            distance = calculate_distance_and_direction(
+                x, y, w, h, frame.shape[1], frame.shape[0])
+            print(distance)
+            url = 'http://localhost:5001/send-message'
 
-            print('Fire alarm initiated')
-            # To call alarm thread
+            # Define the message you want to send
+            message = {'coordinates': [33.98785020929, -5.020268935320675]}
+
+            # Send the HTTP POST request with the message payload
+            response = requests.post(url, json=message)
+
+            # Check if the request was successful (status code 200)
+            if response.status_code == 200:
+                print('Message sent successfully.')
+            else:
+                print('Failed to send message.')
+
+
+            # Convert the frame to bytes
+            frame_bytes = cv2.imencode('.jpg', frame)[1].tobytes()
+            # Send the full frame image to the API
+            threading.Thread(target=send_image_to_api, args=(frame_bytes,)).start()
+
+
+            # # Capture ROI and send it to the API
+            # roi_bytes = cv2.imencode('.jpg', roi_color)[1].tobytes()
+            # threading.Thread(target=send_image_to_api, args=(roi_bytes,)).start()
+
             threading.Thread(target=play_alarm_sound).start()
-
             runOnce = True
         if runOnce == True:
-            # print('Mail is already sent once')
             print('Fire alarm is already triggered once')
             runOnce = True
 
-    # Displays the original frame with detected fire regions
     cv2.imshow('frame', frame)
 
-    key = cv2.waitKey(1)  # Wait for a key press for 1 millisecond
+    key = cv2.waitKey(1)
 
-    # Check if the pressed key is 'q' or the escape key (27 ASCII value)
     if key == ord('q') or key == 27:
-        break  # Break out of the loop and exit the program
-
+        break
 
 cv2.destroyAllWindows()
 video.release()
